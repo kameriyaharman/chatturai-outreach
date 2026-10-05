@@ -1,0 +1,27 @@
+{
+  "name": "chatturai-outreach",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "migrate": "node src/db/migrate.js",
+    "dev": "node --watch src/server.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cookie-parser": "^1.4.6",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "googleapis": "^183.0.0",
+    "imapflow": "^1.0.164",
+    "jsonwebtoken": "^9.0.2",
+    "luxon": "^3.4.4",
+    "mailparser": "^3.7.1",
+    "nodemailer": "^6.9.13",
+    "pg": "^8.11.5"
+  }
+}
