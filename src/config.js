@@ -30,8 +30,15 @@ export const config = {
   appUrl: (process.env.APP_URL || '').replace(/\/$/, ''),
   googleClientId: process.env.GOOGLE_CLIENT_ID || '',
   googleClientSecret: process.env.GOOGLE_CLIENT_SECRET || '',
+
+  // Who may sign in with Google. Empty means: anyone already set up as a
+  // mailbox, plus the very first account when there are none yet.
+  allowedLoginEmails: (process.env.ALLOWED_LOGIN_EMAILS || '')
+    .split(',').map((e) => e.trim().toLowerCase()).filter(Boolean),
+  // One callback serves both signing in and connecting another mailbox, so
+  // only a single redirect URI has to be registered with Google.
   get googleRedirectUri() {
-    return `${this.appUrl}/api/mailboxes/gmail/callback`;
+    return `${this.appUrl}/api/auth/google/callback`;
   },
 
   schedulerIntervalMs: parseInt(process.env.SCHEDULER_INTERVAL_MS || '30000', 10),

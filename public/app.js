@@ -81,18 +81,40 @@ function shell(body, active) {
 }
 
 /* -------------------------------------------------------------- login -- */
-function renderLogin() {
+async function renderLogin() {
+  const g = await fetch('/api/auth/google/available')
+    .then((r) => r.json()).catch(() => ({ available: false }));
+
+  const params = new URLSearchParams((location.hash.split('?')[1] || ''));
+  const err = params.get('signin_error');
+
   app.innerHTML = `
     <div class="login"><div class="box">
       <h1>Chatturai Outreach</h1>
       <p class="sub">Sign in to run your campaigns.</p>
+
+      ${err ? `<div class="notice critical"><b>Could not sign in</b><p>${esc(err)}</p></div>` : ''}
+
       <div class="panel"><div class="body">
+        ${g.available ? `
+          <button class="primary" data-action="google-signin" style="width:100%">
+            Sign in with Google</button>
+          <p class="hint" style="text-align:center;margin:10px 0">
+            Signs you in and sets that address up as a sender.</p>
+          <div style="display:flex;align-items:center;gap:10px;margin:16px 0">
+            <div style="flex:1;height:1px;background:var(--rule)"></div>
+            <span class="hint">or</span>
+            <div style="flex:1;height:1px;background:var(--rule)"></div>
+          </div>` : ''}
+
         <label class="field"><span>Password</span>
-          <input type="password" id="pw" autofocus></label>
-        <button class="primary" data-action="login" style="width:100%">Sign in</button>
+          <input type="password" id="pw" ${g.available ? '' : 'autofocus'}></label>
+        <button class="${g.available ? '' : 'primary'}" data-action="login"
+          style="width:100%">Sign in with password</button>
         <div id="loginerr" class="hint" style="color:var(--rust)"></div>
       </div></div>
     </div></div>`;
+
   document.getElementById('pw').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') doLogin();
   });
@@ -1096,6 +1118,11 @@ document.addEventListener('click', async (e) => {
   try {
     switch (action) {
       case 'login': e.preventDefault(); return doLogin();
+      case 'google-signin': {
+        const { url } = await api('/auth/google/start');
+        location.href = url;
+        return;
+      }
       case 'logout':
         e.preventDefault();
         await api('/auth/logout', { method: 'POST' });

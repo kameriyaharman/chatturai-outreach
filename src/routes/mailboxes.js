@@ -215,36 +215,4 @@ mailboxRouter.get('/gmail/start', (req, res) => {
   res.json({ url: consentUrl('connect') });
 });
 
-mailboxRouter.get('/gmail/callback', async (req, res) => {
-  const done = (msg, ok) =>
-    res.redirect(`/#/mailboxes?${ok ? 'connected' : 'error'}=${encodeURIComponent(msg)}`);
 
-  if (req.query.error) return done(String(req.query.error), false);
-  if (!req.query.code) return done('Google did not send a code back.', false);
-
-  try {
-    const { email, refreshToken } = await exchangeCode(String(req.query.code));
-
-    const existing = await one('SELECT * FROM mailboxes WHERE email = $1', [email]);
-    if (existing) {
-      await q(
-        `UPDATE mailboxes SET auth_type='gmail', oauth_refresh_enc=$2, status='active',
-                last_error=NULL, consecutive_fails=0 WHERE id=$1`,
-        [existing.id, storeRefreshToken(refreshToken)],
-      );
-      return done(`${email} reconnected`, true);
-    }
-
-    await one(
-      `INSERT INTO mailboxes
-        (email, display_name, signature, username, password_enc, auth_type,
-         oauth_refresh_enc, smtp_port, imap_port, daily_limit, warmup_enabled, quota_date)
-       VALUES ($1,$2,'',$1,'', 'gmail',$3,465,993,$4,FALSE,$5) RETURNING *`,
-      [email, email, storeRefreshToken(refreshToken), 5, DateTime.now().toISODate()],
-    );
-    return done(`${email} connected`, true);
-  } catch (err) {
-    console.error('[gmail] callback failed:', err.message);
-    return done(err.message, false);
-  }
-});
