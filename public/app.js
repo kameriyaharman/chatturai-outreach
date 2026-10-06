@@ -1,7 +1,7 @@
 /* Chatturai Outreach — single page app, no build step. */
 
 const app = document.getElementById('app');
-const state = { route: '', data: {}, tab: 'sequence', selectedLead: null, inboxKind: 'normal',
+const state = { route: '', data: {}, tab: 'report', selectedLead: null, inboxKind: 'normal',
   filter: {}, picked: new Set() };
 
 /* ----------------------------------------------------------- helpers -- */
@@ -410,10 +410,13 @@ async function viewCampaigns() {
           <td class="num">${c.stats.replied} <span class="hint">${c.stats.reply_rate}%</span></td>
           <td class="num">${c.stats.bounced}
             <span class="hint" style="${c.stats.bounce_rate > 2 ? 'color:var(--rust)' : ''}">${c.stats.bounce_rate}%</span></td>
-          <td class="num">
+          <td class="num" style="white-space:nowrap">
+            <a class="btn small" href="#/campaign/${c.id}" data-action="open-report" data-id="${c.id}">Report</a>
             ${c.status === 'active'
     ? `<button class="small" data-action="pause-campaign" data-id="${c.id}">Pause</button>`
     : `<button class="small primary" data-action="start-campaign" data-id="${c.id}">Start</button>`}
+            <button class="small danger icon" title="Delete campaign" aria-label="Delete campaign"
+              data-action="delete-campaign" data-id="${c.id}" data-name="${esc(c.name)}">Delete</button>
           </td>
         </tr>`).join('')}</tbody>
     </table>` : `
@@ -480,12 +483,12 @@ async function viewCampaign(id) {
   const c = await api(`/campaigns/${id}`);
   state.data.campaign = c;
 
-  const tabs = ['sequence', 'leads', 'settings'];
-  const tabBody = {
-    sequence: sequenceTab(c),
-    leads: await leadsTab(c),
-    settings: settingsTab(c),
-  }[state.tab] || sequenceTab(c);
+  const tabs = [['report', 'Report'], ['sequence', 'Sequence'], ['leads', 'Leads'], ['settings', 'Settings']];
+  if (!tabs.some(([t]) => t === state.tab)) state.tab = 'report';
+  const tabBody = state.tab === 'report' ? await reportTab(c)
+    : state.tab === 'leads' ? await leadsTab(c)
+      : state.tab === 'settings' ? settingsTab(c)
+        : sequenceTab(c);
 
   shell(`
     <div class="head"><div>
@@ -500,6 +503,8 @@ async function viewCampaign(id) {
     ? `<button data-action="pause-campaign" data-id="${c.id}">Pause</button>`
     : `<button class="primary" data-action="start-campaign" data-id="${c.id}">Start sending</button>`}
         <a class="btn" href="#/campaigns">All campaigns</a>
+        <button class="danger" data-action="delete-campaign" data-id="${c.id}"
+          data-name="${esc(c.name)}">Delete</button>
       </div></div>
 
     ${c.paused_reason ? `<div class="notice critical"><b>Stopped</b><p>${esc(c.paused_reason)}</p></div>` : ''}
@@ -508,10 +513,123 @@ async function viewCampaign(id) {
       <p>The daily limit is set to ${c.daily_limit}. Widen the sending window or shorten the gap
       between mails if you need the full number.</p></div>` : ''}
 
-    <div class="tabs">${tabs.map((t) => `
+    <div class="tabs">${tabs.map(([t, label]) => `
       <button class="${state.tab === t ? 'on' : ''}" data-action="tab" data-tab="${t}">
-        ${t[0].toUpperCase() + t.slice(1)}</button>`).join('')}</div>
+        ${label}</button>`).join('')}</div>
     ${tabBody}`, 'campaigns');
+  if (state.tab === 'settings') paintSettingsMailboxes(c);
+}
+
+const fmtDate = (iso) => (iso ? new Date(iso).toLocaleString('en-IN',
+  { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—');
+const pctOf = (n, d) => (d ? `${((n / d) * 100).toFixed(1)}%` : '—');
+
+async function reportTab(c) {
+  const r = await api(`/campaigns/${c.id}/report`);
+  const s = r.summary;
+  const touched = s.total - s.pending;
+
+  const tile = (value, label, note, tone = '') => `
+    <div class="tile ${tone}"><b>${value}</b><span>${label}</span>${note ? `<small>${note}</small>` : ''}</div>`;
+
+  // progress through the list
+  const seg = (n, cls, label) => (s.total && n ? `<i class="${cls}" style="flex:${n}"
+    title="${label}: ${n}"></i>` : '');
+  const progress = `
+    <div class="stack">${seg(s.replied, 'g', 'Replied')}${seg(s.in_sequence, 'b', 'In sequence')}${seg(s.finished, 'n', 'Finished, no reply')}${seg(s.bounced + s.unsubscribed, 'r', 'Bounced or stopped')}${seg(s.pending, 'w', 'Not contacted yet')}</div>
+    <div class="legend">
+      <span><i class="g"></i>Replied ${s.replied}</span>
+      <span><i class="b"></i>In sequence ${s.in_sequence}</span>
+      <span><i class="n"></i>Finished, no reply ${s.finished}</span>
+      <span><i class="r"></i>Bounced / stopped ${s.bounced + s.unsubscribed}</span>
+      <span><i class="w"></i>Not contacted yet ${s.pending}</span>
+    </div>`;
+
+  const maxStep = Math.max(1, ...r.steps.map((x) => x.sent));
+  const stepRows = r.steps.map((x) => `
+    <tr>
+      <td><b>${x.step_no === 1 ? 'First mail' : `Follow-up ${x.step_no - 1}`}</b>
+        <div class="hint">${esc(x.subject || (x.step_no > 1 ? 'same thread' : 'no subject yet'))}</div></td>
+      <td style="width:40%"><div class="hbar"><i style="width:${(x.sent / maxStep) * 100}%"></i></div></td>
+      <td class="num">${x.sent}</td>
+      <td class="num">${x.replies_after} <span class="hint">${pctOf(x.replies_after, x.sent)}</span></td>
+    </tr>`).join('');
+
+  const maxDay = Math.max(1, ...r.daily.map((d) => d.sent));
+  const daily = r.daily.length ? `
+    <div class="spark tall">${r.daily.map((d) => `
+      <i class="${d.replies ? 'r' : ''}" style="height:${Math.max(4, (d.sent / maxDay) * 100)}%"
+        title="${d.day}: ${d.sent} sent, ${d.replies} replies, ${d.bounces} bounced"></i>`).join('')}</div>
+    <div class="hint" style="display:flex;justify-content:space-between;margin-top:6px">
+      <span>${r.daily[0].day}</span><span>${r.daily[r.daily.length - 1].day}</span></div>`
+    : '<p class="sub" style="margin:0">Nothing sent yet.</p>';
+
+  const mbRows = r.mailboxes.length ? r.mailboxes.map((m) => `
+    <tr><td class="mono">${esc(m.email)}</td>
+      <td class="num">${m.sent}</td>
+      <td class="num">${m.replies} <span class="hint">${pctOf(m.replies, m.sent)}</span></td>
+      <td class="num" style="${m.bounces ? 'color:var(--rust)' : ''}">${m.bounces}</td>
+      <td class="hint">${fmtDate(m.last_sent)}</td></tr>`).join('')
+    : '<tr><td colspan="5" class="hint">No mail sent yet.</td></tr>';
+
+  const replyList = r.replies.length ? r.replies.map((x) => `
+    <div class="msg ${x.is_read ? '' : 'unread'}" data-action="open-thread" data-id="${x.lead_id}">
+      <b>${esc(x.first_name || x.email)}</b>
+      <span>${esc(x.company || x.email)} · ${when(x.sent_at)}</span>
+      <p>${esc(x.snippet || x.subject || '')}</p>
+    </div>`).join('') : '<div class="empty" style="padding:24px">No replies yet.</div>';
+
+  const problemRows = r.problems.length ? r.problems.map((p) => `
+    <tr><td class="mono">${esc(p.email)}</td><td>${statusChip(p.status)}</td>
+      <td class="hint">${esc(p.last_error || '')}</td></tr>`).join('') : '';
+
+  const recentRows = r.recent.length ? r.recent.map((m) => `
+    <tr><td class="hint">${fmtDate(m.sent_at)}</td>
+      <td class="mono">${esc(m.to_addr)}</td>
+      <td>${m.step_no ? (m.step_no === 1 ? 'First mail' : `Follow-up ${m.step_no - 1}`) : 'Your reply'}</td>
+      <td class="mono hint">${esc(m.mailbox_email || '')}</td></tr>`).join('')
+    : '<tr><td colspan="4" class="hint">Nothing sent yet.</td></tr>';
+
+  return `
+    <div class="tiles">
+      ${tile(s.total, 'leads', `${touched} contacted`)}
+      ${tile(s.sent, 'mails sent', `${s.sent_today} today`)}
+      ${tile(s.replied, 'replied', `${s.reply_rate}% of contacted`, 'good')}
+      ${tile(s.bounced, 'bounced', `${s.bounce_rate}% of contacted`, s.bounce_rate > 2 ? 'bad' : '')}
+      ${tile(s.unsubscribed, 'asked to stop', s.auto_replies ? `${s.auto_replies} out-of-office` : '')}
+    </div>
+
+    <div class="panel"><header><h2>Where the list stands</h2>
+      <span class="hint">${s.total} leads</span></header>
+      <div class="body">${s.total ? progress : '<p class="sub" style="margin:0">No leads yet.</p>'}</div></div>
+
+    <div class="grid2">
+      <div class="panel"><header><h2>Each mail in the sequence</h2></header>
+        <table><thead><tr><th>Step</th><th></th><th class="num">Sent</th>
+          <th class="num">Replied after</th></tr></thead><tbody>${stepRows}</tbody></table></div>
+
+      <div class="panel"><header><h2>Last 30 days</h2>
+        <span class="hint">bars are mails sent, green marks days with replies</span></header>
+        <div class="body">${daily}</div></div>
+    </div>
+
+    <div class="grid2">
+      <div class="panel"><header><h2>Replies</h2><span class="hint">${r.replies.length}</span></header>
+        <div class="msglist" style="max-height:380px">${replyList}</div></div>
+
+      <div class="panel"><header><h2>By mailbox</h2></header>
+        <table><thead><tr><th>Mailbox</th><th class="num">Sent</th><th class="num">Replies</th>
+          <th class="num">Bounced</th><th>Last sent</th></tr></thead><tbody>${mbRows}</tbody></table></div>
+    </div>
+
+    ${problemRows ? `<div class="panel"><header><h2>Bounced, failed or stopped</h2>
+      <span class="hint">${r.problems.length}${r.problems.length === 50 ? '+' : ''}</span></header>
+      <table><thead><tr><th>Email</th><th>Status</th><th>Reason</th></tr></thead>
+      <tbody>${problemRows}</tbody></table></div>` : ''}
+
+    <div class="panel"><header><h2>Recently sent</h2></header>
+      <table><thead><tr><th>When</th><th>To</th><th>Mail</th><th>From</th></tr></thead>
+      <tbody>${recentRows}</tbody></table></div>`;
 }
 
 function sequenceTab(c) {
@@ -1089,7 +1207,7 @@ async function viewBlocklist() {
 }
 
 /* -------------------------------------------------------------- dialog -- */
-function openDialog({ title, body, confirm = 'Save', onConfirm, wide, confirmDisabled }) {
+function openDialog({ title, body, confirm = 'Save', onConfirm, wide, confirmDisabled, danger }) {
   const scrim = document.createElement('div');
   scrim.className = 'scrim';
   scrim.innerHTML = `
@@ -1098,7 +1216,7 @@ function openDialog({ title, body, confirm = 'Save', onConfirm, wide, confirmDis
       <div class="body">${body}</div>
       <footer>
         <button data-action="dialog-close">Cancel</button>
-        <button class="primary" data-action="dialog-confirm" ${confirmDisabled ? 'disabled' : ''}>${esc(confirm)}</button>
+        <button class="${danger ? 'danger solid' : 'primary'}" data-action="dialog-confirm" ${confirmDisabled ? 'disabled' : ''}>${esc(confirm)}</button>
       </footer>
     </div>`;
   document.body.appendChild(scrim);
@@ -1166,7 +1284,8 @@ document.addEventListener('click', async (e) => {
 
       case 'new-campaign': return newCampaign();
       case 'open-campaign':
-        if (e.target.closest('button[data-action^="pause"], button[data-action^="start"]')) return;
+        if (e.target.closest('button, a')) return;
+        state.tab = 'report';
         location.hash = `#/campaign/${id}`;
         return;
       case 'start-campaign':
@@ -1179,11 +1298,27 @@ document.addEventListener('click', async (e) => {
         await api(`/campaigns/${id}/status`, { method: 'POST', body: { status: 'paused' } });
         toast('Campaign paused.');
         return route();
-      case 'delete-campaign':
-        if (!window.confirm('Delete this campaign with all its leads and history?')) return;
-        await api(`/campaigns/${id}`, { method: 'DELETE' });
-        location.hash = '#/campaigns';
+      case 'open-report':
+        e.stopPropagation();
+        state.tab = 'report';
         return;
+      case 'delete-campaign':
+        e.stopPropagation();
+        return openDialog({
+          title: 'Delete campaign?',
+          body: `<p style="margin:0 0 8px">This removes <b>${esc(el.dataset.name || 'this campaign')}</b>
+            for good — its leads, its sequence and its sent and reply history.</p>
+            <p class="hint" style="margin:0">Contacts stay in the Database, and anyone on
+            Do not contact stays there.</p>`,
+          confirm: 'Delete campaign',
+          danger: true,
+          onConfirm: async () => {
+            await api(`/campaigns/${id}`, { method: 'DELETE' });
+            toast('Campaign deleted.');
+            if (location.hash === '#/campaigns') viewCampaigns();
+            else location.hash = '#/campaigns';
+          },
+        });
 
       case 'tab':
         state.tab = tab;
@@ -1316,11 +1451,9 @@ async function route() {
     if (!me.authenticated) return renderLogin();
 
     if (hash.startsWith('campaign/')) {
-      await viewCampaign(hash.split('/')[1]);
-      if (state.tab === 'settings') paintSettingsMailboxes(state.data.campaign);
-      return;
+      return viewCampaign(hash.split('/')[1]);
     }
-    if (hash === 'campaigns') { state.tab = 'sequence'; return viewCampaigns(); }
+    if (hash === 'campaigns') { state.tab = 'report'; return viewCampaigns(); }
     if (hash === 'contacts') return viewContacts();
     if (hash === 'mailboxes') return viewMailboxes();
     if (hash === 'inbox') return viewInbox();

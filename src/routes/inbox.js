@@ -11,7 +11,7 @@ export const inboxRouter = express.Router();
 // Every reply, from every mailbox, in one list.
 inboxRouter.get('/', async (req, res) => {
   const { kind = 'normal', unread, limit = 60 } = req.query;
-  const where = [`m.direction = 'in'`];
+  const where = [`m.direction = 'in'`, 'm.lead_id IS NOT NULL'];
   const params = [];
 
   if (kind && kind !== 'all') { params.push(kind); where.push(`m.kind = $${params.length}`); }
@@ -39,7 +39,7 @@ inboxRouter.get('/', async (req, res) => {
        COUNT(*) FILTER (WHERE kind='bounce')::int       AS bounces,
        COUNT(*) FILTER (WHERE kind='auto_reply')::int   AS auto_replies,
        COUNT(*) FILTER (WHERE kind='unsubscribe')::int  AS unsubscribes
-     FROM messages WHERE direction='in'`,
+     FROM messages WHERE direction='in' AND lead_id IS NOT NULL`,
   );
 
   res.json({ rows, counts });
@@ -132,12 +132,12 @@ statsRouter.get('/', async (req, res) => {
   const replies = await one(
     `SELECT COUNT(*) FILTER (WHERE kind='normal' AND is_read=FALSE)::int AS unread,
             COUNT(*) FILTER (WHERE kind='normal' AND sent_at::date = CURRENT_DATE)::int AS today
-       FROM messages WHERE direction='in'`);
+       FROM messages WHERE direction='in' AND lead_id IS NOT NULL`);
 
   const series = await q(
     `SELECT sent_at::date AS day,
             COUNT(*) FILTER (WHERE direction='out')::int AS sent,
-            COUNT(*) FILTER (WHERE direction='in' AND kind='normal')::int AS replies
+            COUNT(*) FILTER (WHERE direction='in' AND kind='normal' AND lead_id IS NOT NULL)::int AS replies
        FROM messages
       WHERE sent_at > NOW() - interval '14 days'
       GROUP BY 1 ORDER BY 1`);

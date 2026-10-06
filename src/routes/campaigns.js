@@ -69,6 +69,81 @@ campaignRouter.get('/:id', async (req, res) => {
   });
 });
 
+// Everything needed to judge how a campaign is doing, in one call.
+campaignRouter.get('/:id/report', async (req, res) => {
+  const c = await one('SELECT * FROM campaigns WHERE id = $1', [req.params.id]);
+  if (!c) return res.status(404).json({ error: 'Campaign not found.' });
+  const id = c.id;
+
+  const summary = await stats(id);
+
+  const inbound = await one(
+    `SELECT COUNT(*) FILTER (WHERE kind='normal')::int      AS replies,
+            COUNT(*) FILTER (WHERE kind='auto_reply')::int  AS auto_replies,
+            COUNT(*) FILTER (WHERE kind='bounce')::int      AS bounces,
+            COUNT(*) FILTER (WHERE kind='unsubscribe')::int AS unsubscribes
+       FROM messages WHERE campaign_id=$1 AND direction='in'`, [id]);
+
+  const sentToday = await one(
+    `SELECT COUNT(*)::int AS c FROM messages
+      WHERE campaign_id=$1 AND direction='out' AND step_no IS NOT NULL
+        AND (sent_at AT TIME ZONE $2)::date = (NOW() AT TIME ZONE $2)::date`,
+    [id, c.timezone]);
+
+  // How far leads have got through the sequence, and what each step produced.
+  const steps = await q(
+    `SELECT s.step_no,
+            s.subject,
+            (SELECT COUNT(*)::int FROM messages m
+              WHERE m.campaign_id=$1 AND m.direction='out' AND m.step_no=s.step_no) AS sent,
+            (SELECT COUNT(*)::int FROM leads l
+              WHERE l.campaign_id=$1 AND l.status='replied' AND l.current_step=s.step_no) AS replies_after
+       FROM sequence_steps s WHERE s.campaign_id=$1 ORDER BY s.step_no`, [id]);
+
+  const mailboxes = await q(
+    `SELECT mb.id, mb.email,
+            COUNT(m.*) FILTER (WHERE m.direction='out' AND m.step_no IS NOT NULL)::int AS sent,
+            COUNT(m.*) FILTER (WHERE m.direction='in' AND m.kind='normal')::int AS replies,
+            COUNT(m.*) FILTER (WHERE m.direction='in' AND m.kind='bounce')::int AS bounces,
+            MAX(m.sent_at) FILTER (WHERE m.direction='out') AS last_sent
+       FROM messages m JOIN mailboxes mb ON mb.id = m.mailbox_id
+      WHERE m.campaign_id=$1
+      GROUP BY mb.id, mb.email ORDER BY sent DESC`, [id]);
+
+  const daily = await q(
+    `SELECT to_char((sent_at AT TIME ZONE $2)::date, 'YYYY-MM-DD') AS day,
+            COUNT(*) FILTER (WHERE direction='out' AND step_no IS NOT NULL)::int AS sent,
+            COUNT(*) FILTER (WHERE direction='in' AND kind='normal')::int AS replies,
+            COUNT(*) FILTER (WHERE direction='in' AND kind='bounce')::int AS bounces
+       FROM messages
+      WHERE campaign_id=$1 AND sent_at > NOW() - interval '30 days'
+      GROUP BY 1 ORDER BY 1`, [id, c.timezone]);
+
+  const replies = await q(
+    `SELECT DISTINCT ON (l.id) l.id AS lead_id, l.email, l.first_name, l.company,
+            m.subject, left(m.body, 220) AS snippet, m.sent_at, m.is_read
+       FROM messages m JOIN leads l ON l.id = m.lead_id
+      WHERE m.campaign_id=$1 AND m.direction='in' AND m.kind='normal'
+      ORDER BY l.id, m.sent_at DESC`, [id]);
+  replies.sort((a, b) => new Date(b.sent_at) - new Date(a.sent_at));
+
+  const problems = await q(
+    `SELECT id AS lead_id, email, status, last_error FROM leads
+      WHERE campaign_id=$1 AND status IN ('bounced','failed','unsubscribed')
+      ORDER BY id DESC LIMIT 50`, [id]);
+
+  const recent = await q(
+    `SELECT m.lead_id, m.to_addr, m.step_no, m.subject, m.sent_at, mb.email AS mailbox_email
+       FROM messages m LEFT JOIN mailboxes mb ON mb.id = m.mailbox_id
+      WHERE m.campaign_id=$1 AND m.direction='out'
+      ORDER BY m.sent_at DESC LIMIT 10`, [id]);
+
+  res.json({
+    summary: { ...summary, sent_today: sentToday.c, ...inbound },
+    steps, mailboxes, daily, replies, problems, recent,
+  });
+});
+
 campaignRouter.post('/', async (req, res) => {
   const b = req.body || {};
   if (!b.name) return res.status(400).json({ error: 'Give the campaign a name.' });

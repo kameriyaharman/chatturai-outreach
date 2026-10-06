@@ -233,3 +233,10 @@ CREATE TABLE IF NOT EXISTS imap_state (
   uid_validity BIGINT,
   last_uid     BIGINT NOT NULL DEFAULT 0
 );
+
+-- ------------------------------------------------------------
+-- Cleanup: the inbox used to store every incoming mail, including
+-- ones unrelated to any campaign. Only replies to our own mails stay.
+-- (The originals are untouched in the mailbox itself.)
+-- ------------------------------------------------------------
+DELETE FROM messages WHERE direction = 'in' AND lead_id IS NULL;

@@ -159,6 +159,11 @@ async function storeIncoming(mb, incoming) {
   const verdict = classifyIncoming({ from, subject, body, headers: incoming.headers });
   const lead = await matchLead({ mb, from, inReplyTo, references, body, verdict });
 
+  // Only mail that answers something this tool sent is kept. Everything else
+  // landing in a sender's inbox (newsletters, personal mail, other threads)
+  // is none of the outreach system's business and is never stored.
+  if (!lead) return;
+
   await q(
     `INSERT INTO messages
        (lead_id, campaign_id, mailbox_id, direction, from_addr, to_addr, subject,
@@ -178,8 +183,6 @@ async function storeIncoming(mb, incoming) {
       incoming.date || new Date(),
     ],
   );
-
-  if (!lead) return;
 
   if (verdict.kind === 'bounce') {
     await q(
@@ -243,7 +246,8 @@ async function matchLead({ mb, from, inReplyTo, references, body, verdict }) {
     const bounced = extractBouncedAddress(body);
     if (bounced) {
       const row = await one(
-        `SELECT * FROM leads WHERE lower(email) = $1 ORDER BY id DESC LIMIT 1`,
+        `SELECT * FROM leads WHERE lower(email) = $1 AND status <> 'pending'
+          ORDER BY id DESC LIMIT 1`,
         [bounced],
       );
       if (row) return row;
@@ -254,17 +258,11 @@ async function matchLead({ mb, from, inReplyTo, references, body, verdict }) {
   if (from) {
     const row = await one(
       `SELECT l.* FROM leads l
-        WHERE lower(l.email) = $1 AND l.mailbox_id = $2
+        WHERE lower(l.email) = $1 AND l.mailbox_id = $2 AND l.status <> 'pending'
         ORDER BY l.id DESC LIMIT 1`,
       [from, mb.id],
     );
     if (row) return row;
-
-    const any = await one(
-      `SELECT * FROM leads WHERE lower(email) = $1 ORDER BY id DESC LIMIT 1`,
-      [from],
-    );
-    if (any) return any;
   }
 
   return null;
