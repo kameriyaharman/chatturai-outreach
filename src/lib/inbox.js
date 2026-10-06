@@ -156,6 +156,10 @@ async function storeIncoming(mb, incoming) {
     if (dup) return;
   }
 
+  // Mail from one of our own sending addresses is never a reply — it is a copy
+  // of something we sent (a test to a colleague, a cc, a forward).
+  if (from && await isOwnMailbox(from)) return;
+
   const verdict = classifyIncoming({ from, subject, body, headers: incoming.headers });
   const lead = await matchLead({ mb, from, inReplyTo, references, body, verdict });
 
@@ -163,6 +167,10 @@ async function storeIncoming(mb, incoming) {
   // landing in a sender's inbox (newsletters, personal mail, other threads)
   // is none of the outreach system's business and is never stored.
   if (!lead) return;
+
+  // A reply has to come from the person we wrote to, or someone at their
+  // company. Bounce reports are the exception — they come from mail servers.
+  if (verdict.kind !== 'bounce' && !sameSender(from, lead.email)) return;
 
   await q(
     `INSERT INTO messages
@@ -226,6 +234,29 @@ async function storeIncoming(mb, incoming) {
     `UPDATE leads SET status='replied', next_send_at=NULL, replied_at=NOW() WHERE id=$1`,
     [lead.id],
   );
+}
+
+const PUBLIC_DOMAINS = new Set([
+  'gmail.com', 'googlemail.com', 'yahoo.com', 'yahoo.co.in', 'outlook.com', 'hotmail.com',
+  'live.com', 'msn.com', 'icloud.com', 'me.com', 'aol.com', 'proton.me', 'protonmail.com',
+  'rediffmail.com', 'zoho.com', 'yandex.com', 'gmx.com', 'mail.com',
+]);
+
+const domainOf = (addr) => String(addr || '').toLowerCase().split('@')[1] || '';
+
+export function sameSender(from, leadEmail) {
+  const f = String(from || '').toLowerCase().trim();
+  const l = String(leadEmail || '').toLowerCase().trim();
+  if (!f || !l) return false;
+  if (f === l) return true;
+  const d = domainOf(l);
+  return !!d && !PUBLIC_DOMAINS.has(d) && domainOf(f) === d;
+}
+
+async function isOwnMailbox(addr) {
+  const row = await one('SELECT 1 FROM mailboxes WHERE lower(email) = $1 LIMIT 1',
+    [String(addr).toLowerCase().trim()]);
+  return !!row;
 }
 
 async function matchLead({ mb, from, inReplyTo, references, body, verdict }) {

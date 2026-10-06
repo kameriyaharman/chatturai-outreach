@@ -240,3 +240,24 @@ CREATE TABLE IF NOT EXISTS imap_state (
 -- (The originals are untouched in the mailbox itself.)
 -- ------------------------------------------------------------
 DELETE FROM messages WHERE direction = 'in' AND lead_id IS NULL;
+
+-- Cleanup: copies of our own mails (sent from one of our mailboxes, or from
+-- someone who is not the lead) were once counted as replies. Bounce reports
+-- are kept — they always come from a mail server, not the lead.
+DELETE FROM messages m
+ WHERE m.direction = 'in'
+   AND m.kind <> 'bounce'
+   AND (
+     EXISTS (SELECT 1 FROM mailboxes mb WHERE lower(mb.email) = lower(m.from_addr))
+     OR NOT EXISTS (
+       SELECT 1 FROM leads l
+        WHERE l.id = m.lead_id
+          AND (lower(l.email) = lower(m.from_addr)
+               OR (split_part(lower(l.email), '@', 2) = split_part(lower(m.from_addr), '@', 2)
+                   AND split_part(lower(l.email), '@', 2) NOT IN
+                     ('gmail.com','googlemail.com','yahoo.com','yahoo.co.in','outlook.com',
+                      'hotmail.com','live.com','msn.com','icloud.com','me.com','aol.com',
+                      'proton.me','protonmail.com','rediffmail.com','zoho.com','yandex.com',
+                      'gmx.com','mail.com')))
+     )
+   );

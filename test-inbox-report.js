@@ -5,7 +5,12 @@ import express from 'express';
 import { migrate, q, one, pool } from './src/db/index.js';
 import { encrypt } from './src/lib/crypto.js';
 import { setGmailBackend } from './src/lib/gmail.js';
-import { syncAllMailboxes } from './src/lib/inbox.js';
+import { syncAllMailboxes, sameSender } from './src/lib/inbox.js';
+
+assert.ok(sameSender('ravi@venue.com', 'ravi@venue.com'));
+assert.ok(sameSender('boss@venue.com', 'ravi@venue.com'), 'a colleague at the same company counts');
+assert.ok(!sameSender('someone@gmail.com', 'ravi@gmail.com'), 'gmail.com is not one company');
+assert.ok(!sameSender('akash@chatturai.com', 'ravi@venue.com'));
 import { campaignRouter } from './src/routes/campaigns.js';
 import { inboxRouter } from './src/routes/inbox.js';
 
@@ -20,6 +25,19 @@ await q(`INSERT INTO messages (mailbox_id, direction, from_addr, subject, body)
 await migrate();
 assert.equal((await one(`SELECT COUNT(*)::int c FROM messages WHERE lead_id IS NULL`)).c, 0,
   'old unrelated inbox rows are cleaned up');
+
+await q(`INSERT INTO mailboxes (email, display_name, username) VALUES ('akash@chatturai.com','Akash','a')`);
+// an old self-copy stored as a reply before the fix — must be cleaned up
+const c0 = await one(`INSERT INTO campaigns (name) VALUES ('old') RETURNING *`);
+const l0 = await one(`INSERT INTO leads (campaign_id, email, status) VALUES ($1,'karthik@chatturai.com','replied') RETURNING *`, [c0.id]);
+await q(`INSERT INTO messages (lead_id, campaign_id, direction, from_addr, subject, body, kind)
+  VALUES ($1,$2,'in','akash@chatturai.com','Hi Eric','pitch','normal'),
+         ($1,$2,'in','mailer-daemon@googlemail.com','Undeliverable','x','bounce'),
+         ($1,$2,'in','karthik@chatturai.com','Re: hi','real','normal')`, [l0.id, c0.id]);
+await migrate();
+assert.deepEqual((await q(`SELECT from_addr FROM messages WHERE lead_id=$1 ORDER BY id`, [l0.id])).map((r) => r.from_addr),
+  ['mailer-daemon@googlemail.com', 'karthik@chatturai.com'], 'self-copies removed, bounces and real replies kept');
+await q('DELETE FROM campaigns WHERE id=$1', [c0.id]);
 
 const c = await one(`INSERT INTO campaigns (name) VALUES ('Test camp') RETURNING *`);
 await q(`INSERT INTO sequence_steps (campaign_id, step_no, day_offset, subject, body) VALUES ($1,1,0,'Hello','Hi'),($1,2,3,'','Bump')`, [c.id]);
@@ -40,6 +58,10 @@ setGmailBackend({
     msg('friend@gmail.com', 'Dinner?'),                                // unrelated
     msg('later@venue.com', 'Random hello'),                            // a lead we never mailed
     msg('ravi@venue.com', 'Re: Hello', { inReplyTo: '<out-1@x>' }),    // a real reply
+    // a copy of our own mail landing in another of our mailboxes, threaded to the lead
+    msg('akash@chatturai.com', 'Re: Hello', { inReplyTo: '<out-1@x>' }),
+    // someone unrelated replying on the thread
+    msg('random@other.com', 'Re: Hello', { inReplyTo: '<out-1@x>' }),
   ],
 });
 await syncAllMailboxes();
