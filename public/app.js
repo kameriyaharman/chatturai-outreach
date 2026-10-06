@@ -54,31 +54,60 @@ function statusChip(status) {
 const DAYS = [[1, 'Mon'], [2, 'Tue'], [3, 'Wed'], [4, 'Thu'], [5, 'Fri'], [6, 'Sat'], [7, 'Sun']];
 
 /* -------------------------------------------------------------- shell -- */
+const svg = (d) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+  stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
+const ICON = {
+  today: svg('<rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4"/>'),
+  campaigns: svg('<path d="M4 4h16v5H4zM4 13h10v7H4z"/><path d="M18 13l3 3.5-3 3.5"/>'),
+  contacts: svg('<ellipse cx="12" cy="5.5" rx="8" ry="3"/><path d="M4 5.5v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6M4 11.5v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/>'),
+  inbox: svg('<path d="M3 13l3-8h12l3 8v6H3z"/><path d="M3 13h5l1.5 2.5h5L16 13h5"/>'),
+  mailboxes: svg('<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/>'),
+  blocklist: svg('<circle cx="12" cy="12" r="9"/><path d="M5.6 5.6l12.8 12.8"/>'),
+  mark: svg('<rect x="3" y="7" width="18" height="13" rx="2"/><path d="M3 7l3-4h12l3 4M8 3l-2 4M14 3l-2 4M20 3l-2 4"/>'),
+};
+
 function shell(body, active) {
-  const unread = state.data.stats?.unread_replies || 0;
-  const issues = state.data.stats?.issues?.length || 0;
-  const link = (href, label, badge) => `
+  const st = state.data.stats || {};
+  const unread = st.unread_replies || 0;
+  const issues = st.issues?.length || 0;
+  const link = (href, icon, label, badge) => `
     <a class="navlink ${active === href ? 'on' : ''}" href="#/${href}">
-      <span>${label}</span>${badge ? `<span class="pip">${badge}</span>` : ''}
+      ${ICON[icon]}<span class="label">${label}</span>${badge ? `<span class="pip">${badge}</span>` : ''}
     </a>`;
+
+  const cap = st.capacity_today || 0;
+  const pct = cap ? Math.min(100, ((st.sent_today || 0) / cap) * 100) : 0;
+  const live = (st.campaigns_sending_now || 0) > 0;
 
   app.innerHTML = `
     <div class="shell">
       <aside class="rail">
-        <div class="brand"><b>Outreach</b><span>Chatturai</span></div>
+        <div class="brand"><div class="mark">${ICON.mark}</div>
+          <div><b>Outreach</b><span>Chatturai</span></div></div>
         <nav>
-          ${link('', 'Today', issues)}
-          ${link('campaigns', 'Campaigns')}
-          ${link('contacts', 'Database')}
-          ${link('inbox', 'Inbox', unread)}
-          ${link('mailboxes', 'Mailboxes')}
-          ${link('blocklist', 'Do not contact')}
+          ${link('', 'today', 'Today', issues)}
+          ${link('campaigns', 'campaigns', 'Campaigns')}
+          ${link('inbox', 'inbox', 'Inbox', unread)}
+          ${link('contacts', 'contacts', 'Database')}
+          ${link('mailboxes', 'mailboxes', 'Mailboxes')}
+          ${link('blocklist', 'blocklist', 'Do not contact')}
         </nav>
+        ${st.capacity_today != null ? `
+        <div class="tally ${live ? 'live' : ''}">
+          <div class="state"><span class="dot"></span>${live
+    ? `Sending now · ${st.campaigns_sending_now} campaign${st.campaigns_sending_now > 1 ? 's' : ''}`
+    : 'Not sending right now'}</div>
+          <span class="num">${st.sent_today}<small> / ${cap} today</small></span>
+          <div class="meter"><i style="width:${pct}%"></i></div>
+        </div>` : ''}
         <div class="foot"><a href="#" data-action="logout">Sign out</a></div>
       </aside>
       <main class="main">${body}</main>
     </div>`;
 }
+
+const initials = (s) => String(s || '?').replace(/@.*/, '').split(/[\s._-]+/).filter(Boolean)
+  .slice(0, 2).map((w) => w[0].toUpperCase()).join('') || '?';
 
 /* -------------------------------------------------------------- login -- */
 async function renderLogin() {
@@ -90,12 +119,13 @@ async function renderLogin() {
 
   app.innerHTML = `
     <div class="login"><div class="box">
-      <h1>Chatturai Outreach</h1>
-      <p class="sub">Sign in to run your campaigns.</p>
-
-      ${err ? `<div class="notice critical"><b>Could not sign in</b><p>${esc(err)}</p></div>` : ''}
+      <div class="brand"><div class="mark">${ICON.mark}</div>
+        <div><b>Outreach</b><span>Chatturai</span></div></div>
 
       <div class="panel"><div class="body">
+        <h1>Sign in</h1>
+        <p class="sub">Run your campaigns and read replies in one place.</p>
+        ${err ? `<div class="notice critical"><b>Could not sign in</b><p>${esc(err)}</p></div>` : ''}
         ${g.available ? `
           <button class="primary" data-action="google-signin" style="width:100%">
             Sign in with Google</button>
@@ -132,58 +162,115 @@ async function doLogin() {
 }
 
 /* ---------------------------------------------------------- dashboard -- */
+function chart(series, days) {
+  // pad to a fixed number of days so bars keep a steady width
+  const byDay = new Map(series.map((d) => [String(d.day).slice(0, 10), d]));
+  const out = [];
+  for (let i = days - 1; i >= 0; i--) {
+    const d = new Date(Date.now() - i * 86400000);
+    const key = d.toLocaleDateString('en-CA');
+    const row = byDay.get(key) || { sent: 0, replies: 0 };
+    out.push({ key, label: d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }), ...row });
+  }
+  const max = Math.max(1, ...out.map((d) => d.sent));
+  return `
+    <div class="chart">${out.map((d) => `
+      <div class="col ${d.replies ? 'has-reply' : ''}" title="${d.label}: ${d.sent} sent, ${d.replies} replies">
+        ${d.replies ? `<span class="rep" style="bottom:${Math.max(2, (d.sent / max) * 100)}%">${d.replies}</span>` : ''}
+        <div class="bar" style="height:${Math.max(2, (d.sent / max) * 100)}%"></div>
+      </div>`).join('')}</div>
+    <div class="chart-axis"><span>${out[0].label}</span><span>Today</span></div>`;
+}
+
 async function viewDashboard() {
-  const s = await api('/stats');
+  const [s, campaigns, inbox] = await Promise.all([
+    state.data.stats ? Promise.resolve(state.data.stats) : api('/stats'),
+    api('/campaigns'),
+    api('/inbox?kind=normal&limit=6'),
+  ]);
   state.data.stats = s;
 
   const pct = s.capacity_today ? Math.min(100, (s.sent_today / s.capacity_today) * 100) : 0;
-  const max = Math.max(1, ...s.series.map((d) => d.sent));
+  const active = campaigns.filter((c) => c.status === 'active');
+  const shown = (active.length ? active : campaigns).slice(0, 5);
 
-  const issues = s.issues.length ? s.issues.map((i) => `
+  const issues = s.issues.map((i) => `
     <div class="notice ${esc(i.severity)}">
       <b>${esc(i.title)}</b>
-      <p>${esc(i.detail || '')}</p>
-      <div style="margin-top:8px">
+      <p class="pre">${esc(i.detail || '')}</p>
+      <div style="margin-top:10px">
         <button class="small" data-action="resolve-issue" data-id="${i.id}">Mark as handled</button>
       </div>
-    </div>`).join('') : `<div class="notice good"><b>Nothing needs your attention</b>
-      <p>All mailboxes and campaigns are running normally.</p></div>`;
+    </div>`).join('');
+
+  const greeting = (() => {
+    const h = new Date().getHours();
+    return h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
+  })();
 
   shell(`
     <div class="head"><div>
-      <h1>Today</h1>
+      <h1>${greeting}</h1>
       <p class="sub">${new Date().toLocaleDateString('en-IN',
-      { weekday: 'long', day: 'numeric', month: 'long' })}</p>
+    { weekday: 'long', day: 'numeric', month: 'long' })} — here is how today's sending is going.</p>
     </div>
     <div class="actions">
       <button data-action="sync-inbox">Check for replies</button>
-      <a class="btn" href="#/campaigns">Campaigns</a>
+      <button class="primary" data-action="new-campaign">New campaign</button>
     </div></div>
-
-    <div class="daystrip">
-      <div class="count">
-        <b>${s.sent_today}</b><i>/ ${s.capacity_today}</i>
-        <small>mails sent today, out of what your mailboxes can safely carry</small>
-      </div>
-      <div class="bar"><i style="width:${pct}%"></i></div>
-      <div class="facts">
-        <div><b>${s.replies_today}</b><span>replies today</span></div>
-        <div><b>${s.campaigns_sending_now}/${s.campaigns_active}</b><span>campaigns sending</span></div>
-        <div><b>${s.mailboxes_active}/${s.mailboxes_total}</b><span>mailboxes working</span></div>
-      </div>
-    </div>
 
     ${issues}
 
-    <div class="panel">
-      <header><h2>Last 14 days</h2>
-        <span class="hint">bars are mails sent, green marks are replies</span></header>
-      <div class="body">
-        ${s.series.length ? `<div class="spark">
-          ${s.series.map((d) => `<i class="${d.replies ? 'r' : ''}"
-            style="height:${Math.max(4, (d.sent / max) * 100)}%"
-            title="${d.day}: ${d.sent} sent, ${d.replies} replies"></i>`).join('')}
-        </div>` : '<p class="sub" style="margin:0">Nothing sent yet.</p>'}
+    <div class="tiles">
+      <div class="tile"><span>Sent today</span>
+        <b>${s.sent_today}<small>/ ${s.capacity_today}</small></b>
+        <div class="meter"><i style="width:${pct}%"></i></div>
+        <small>out of what your mailboxes can safely send</small></div>
+      <a class="tile ${s.unread_replies ? 'good' : ''}" href="#/inbox"><span>Unread replies</span>
+        <b>${s.unread_replies}</b><small>${s.replies_today} new today</small></a>
+      <a class="tile" href="#/campaigns"><span>Campaigns sending</span>
+        <b>${s.campaigns_sending_now}<small>/ ${s.campaigns_active} active</small></b>
+        <small>${s.campaigns_sending_now ? 'inside their sending hours' : 'outside sending hours right now'}</small></a>
+      <a class="tile ${s.mailboxes_active < s.mailboxes_total ? 'bad' : ''}" href="#/mailboxes"><span>Mailboxes working</span>
+        <b>${s.mailboxes_active}<small>/ ${s.mailboxes_total}</small></b>
+        <small>${s.mailboxes_active < s.mailboxes_total ? 'some need attention' : 'all healthy'}</small></a>
+    </div>
+
+    <div class="grid-main">
+      <div>
+        <div class="panel">
+          <header><h2>Last 14 days</h2>
+            <span class="chart-key"><span><i style="background:#D5DAE3"></i>sent</span>
+              <span><i style="background:var(--ink)"></i>day with replies</span></span></header>
+          <div class="body">${chart(s.series, 14)}</div>
+        </div>
+
+        <div class="panel">
+          <header><h2>${active.length ? 'Running campaigns' : 'Campaigns'}</h2>
+            <a href="#/campaigns" class="hint" style="margin:0">All campaigns</a></header>
+          ${shown.length ? shown.map((c) => `
+            <a class="list-row" href="#/campaign/${c.id}">
+              <div class="grow"><b>${esc(c.name)}</b>
+                <div class="hint">${c.stats.sent} sent · ${c.stats.replied} replied · ${c.stats.pending} waiting</div></div>
+              ${c.sending_now ? '<span class="chip live">Live</span>' : statusChip(c.status)}
+            </a>`).join('')
+    : `<div class="empty"><b>No campaigns yet</b>Create one, add leads and write the first mail.
+        <div class="actions"><button class="primary" data-action="new-campaign">New campaign</button></div></div>`}
+        </div>
+      </div>
+
+      <div class="panel">
+        <header><h2>Latest replies</h2><a href="#/inbox" class="hint" style="margin:0">Open inbox</a></header>
+        ${inbox.rows.length ? inbox.rows.map((m) => `
+          <div class="msg ${m.is_read ? '' : 'unread'}" data-action="open-thread" data-id="${m.lead_id}">
+            <span class="avatar">${esc(initials(m.first_name || m.from_addr))}</span>
+            <div class="who">
+              <b><span class="name">${esc(m.first_name || m.from_addr)}</span><time>${when(m.sent_at)}</time></b>
+              <span>${esc(m.company || m.from_addr)} · ${esc(m.campaign_name || '')}</span>
+              <p>${esc(m.body ? m.body.slice(0, 160) : m.subject)}</p>
+            </div>
+          </div>`).join('')
+    : '<div class="empty"><b>No replies yet</b>Replies to your campaigns will show up here.</div>'}
       </div>
     </div>`, '');
 }
@@ -233,7 +320,7 @@ async function viewMailboxes() {
     </table>` : `
     <div class="empty"><b>No mailboxes yet</b>
       Connect a Gmail or Google Workspace account, or add any other mailbox with its password.
-      <div style="margin-top:14px" class="actions" style="justify-content:center">
+      <div class="actions">
         <button class="primary" data-action="connect-gmail">Connect a Google account</button>
         <button data-action="add-mailbox">Add by password</button>
       </div>
@@ -404,7 +491,7 @@ async function viewCampaigns() {
             <div class="hint">${c.send_days.map((d) => DAYS.find((x) => x[0] === d)?.[1]).join(' ')}
               · ${String(c.window_start).slice(0, 5)}–${String(c.window_end).slice(0, 5)}</div>
             ${c.paused_reason ? `<div class="hint" style="color:var(--rust)">${esc(c.paused_reason)}</div>` : ''}</td>
-          <td>${statusChip(c.status)}${c.sending_now ? ' <span class="chip green">live</span>' : ''}</td>
+          <td>${c.sending_now ? '<span class="chip live">Live</span>' : statusChip(c.status)}</td>
           <td class="num">${c.stats.total}</td>
           <td class="num">${c.stats.sent}</td>
           <td class="num">${c.stats.replied} <span class="hint">${c.stats.reply_rate}%</span></td>
@@ -422,7 +509,7 @@ async function viewCampaigns() {
     </table>` : `
     <div class="empty"><b>No campaigns yet</b>
       A campaign holds one list, one sequence of mails and one sending schedule.
-      <div style="margin-top:14px"><button class="primary" data-action="new-campaign">Create the first one</button></div>
+      <div class="actions"><button class="primary" data-action="new-campaign">Create the first one</button></div>
     </div>`;
 
   shell(`
@@ -498,7 +585,7 @@ async function viewCampaign(id) {
         (${c.stats.reply_rate}%) · ${c.stats.bounced} bounced (${c.stats.bounce_rate}%)
       </p></div>
       <div class="actions">
-        ${statusChip(c.status)}
+        ${c.status === 'active' && c.sending_now ? '<span class="chip live">Live</span>' : statusChip(c.status)}
         ${c.status === 'active'
     ? `<button data-action="pause-campaign" data-id="${c.id}">Pause</button>`
     : `<button class="primary" data-action="start-campaign" data-id="${c.id}">Start sending</button>`}
@@ -530,7 +617,7 @@ async function reportTab(c) {
   const touched = s.total - s.pending;
 
   const tile = (value, label, note, tone = '') => `
-    <div class="tile ${tone}"><b>${value}</b><span>${label}</span>${note ? `<small>${note}</small>` : ''}</div>`;
+    <div class="tile ${tone}"><span>${label}</span><b>${value}</b>${note ? `<small>${note}</small>` : ''}</div>`;
 
   // progress through the list
   const seg = (n, cls, label) => (s.total && n ? `<i class="${cls}" style="flex:${n}"
@@ -550,18 +637,12 @@ async function reportTab(c) {
     <tr>
       <td><b>${x.step_no === 1 ? 'First mail' : `Follow-up ${x.step_no - 1}`}</b>
         <div class="hint">${esc(x.subject || (x.step_no > 1 ? 'same thread' : 'no subject yet'))}</div></td>
-      <td style="width:40%"><div class="hbar"><i style="width:${(x.sent / maxStep) * 100}%"></i></div></td>
+      <td style="width:36%"><div class="hbar"><i style="width:${(x.sent / maxStep) * 100}%"></i></div></td>
       <td class="num">${x.sent}</td>
       <td class="num">${x.replies_after} <span class="hint">${pctOf(x.replies_after, x.sent)}</span></td>
     </tr>`).join('');
 
-  const maxDay = Math.max(1, ...r.daily.map((d) => d.sent));
-  const daily = r.daily.length ? `
-    <div class="spark tall">${r.daily.map((d) => `
-      <i class="${d.replies ? 'r' : ''}" style="height:${Math.max(4, (d.sent / maxDay) * 100)}%"
-        title="${d.day}: ${d.sent} sent, ${d.replies} replies, ${d.bounces} bounced"></i>`).join('')}</div>
-    <div class="hint" style="display:flex;justify-content:space-between;margin-top:6px">
-      <span>${r.daily[0].day}</span><span>${r.daily[r.daily.length - 1].day}</span></div>`
+  const daily = r.daily.length ? chart(r.daily, 30)
     : '<p class="sub" style="margin:0">Nothing sent yet.</p>';
 
   const mbRows = r.mailboxes.length ? r.mailboxes.map((m) => `
@@ -574,9 +655,12 @@ async function reportTab(c) {
 
   const replyList = r.replies.length ? r.replies.map((x) => `
     <div class="msg ${x.is_read ? '' : 'unread'}" data-action="open-thread" data-id="${x.lead_id}">
-      <b>${esc(x.first_name || x.email)}</b>
-      <span>${esc(x.company || x.email)} · ${when(x.sent_at)}</span>
-      <p>${esc(x.snippet || x.subject || '')}</p>
+      <span class="avatar">${esc(initials(x.first_name || x.email))}</span>
+      <div class="who">
+        <b><span class="name">${esc(x.first_name || x.email)}</span><time>${when(x.sent_at)}</time></b>
+        <span>${esc(x.company || x.email)}</span>
+        <p>${esc(x.snippet || x.subject || '')}</p>
+      </div>
     </div>`).join('') : '<div class="empty" style="padding:24px">No replies yet.</div>';
 
   const problemRows = r.problems.length ? r.problems.map((p) => `
@@ -592,11 +676,11 @@ async function reportTab(c) {
 
   return `
     <div class="tiles">
-      ${tile(s.total, 'leads', `${touched} contacted`)}
-      ${tile(s.sent, 'mails sent', `${s.sent_today} today`)}
-      ${tile(s.replied, 'replied', `${s.reply_rate}% of contacted`, 'good')}
-      ${tile(s.bounced, 'bounced', `${s.bounce_rate}% of contacted`, s.bounce_rate > 2 ? 'bad' : '')}
-      ${tile(s.unsubscribed, 'asked to stop', s.auto_replies ? `${s.auto_replies} out-of-office` : '')}
+      ${tile(s.total, 'Leads', `${touched} contacted so far`)}
+      ${tile(s.sent, 'Mails sent', `${s.sent_today} today`)}
+      ${tile(s.replied, 'Replied', `${s.reply_rate}% of contacted`, s.replied ? 'good' : '')}
+      ${tile(s.bounced, 'Bounced', `${s.bounce_rate}% of contacted`, s.bounce_rate > 2 ? 'bad' : '')}
+      ${tile(s.unsubscribed, 'Asked to stop', s.auto_replies ? `${s.auto_replies} out-of-office` : 'nobody yet')}
     </div>
 
     <div class="panel"><header><h2>Where the list stands</h2>
@@ -609,7 +693,8 @@ async function reportTab(c) {
           <th class="num">Replied after</th></tr></thead><tbody>${stepRows}</tbody></table></div>
 
       <div class="panel"><header><h2>Last 30 days</h2>
-        <span class="hint">bars are mails sent, green marks days with replies</span></header>
+        <span class="chart-key"><span><i style="background:#D5DAE3"></i>sent</span>
+          <span><i style="background:var(--ink)"></i>day with replies</span></span></header>
         <div class="body">${daily}</div></div>
     </div>
 
@@ -708,7 +793,7 @@ async function leadsTab(c) {
       ${total > rows.length ? `<div class="body hint">Showing the newest ${rows.length} of ${total}.</div>` : ''}`
     : `<div class="empty"><b>No leads yet</b>
         Upload the CSV you already have. Duplicates and blocked addresses are dropped for you.
-        <div style="margin-top:14px" class="actions" style="justify-content:center">
+        <div class="actions">
           <button data-action="import-leads">Import CSV</button>
           <button class="primary" data-action="assign-from-db">Assign from database</button></div>
       </div>`}</div>`;
@@ -861,29 +946,38 @@ async function viewInbox() {
     ['auto_reply', 'Out of office', counts.auto_replies],
     ['unsubscribe', 'Asked to stop', counts.unsubscribes],
   ];
+  const emptyText = {
+    normal: ['No replies yet', 'When someone answers a campaign mail, it shows up here.'],
+    bounce: ['No bounces', 'Addresses that bounce are listed here and blocked automatically.'],
+    auto_reply: ['No out-of-office replies', 'Auto-replies pause that lead for a week instead of stopping them.'],
+    unsubscribe: ['Nobody has asked to stop', 'Anyone who does is added to Do not contact automatically.'],
+  }[state.inboxKind] || ['Nothing here', ''];
 
   const list = rows.length ? rows.map((m) => `
     <div class="msg ${m.is_read ? '' : 'unread'} ${state.selectedLead === m.lead_id ? 'on' : ''}"
          data-action="open-thread" data-id="${m.lead_id || ''}">
-      <b>${esc(m.first_name || m.from_addr)}</b>
-      <span>${esc(m.company || m.from_addr)} · ${esc(m.campaign_name || 'no campaign')} · ${when(m.sent_at)}</span>
-      <p>${esc(m.subject || '')}</p>
-    </div>`).join('') : '<div class="empty">Nothing here yet.</div>';
+      <span class="avatar">${esc(initials(m.first_name || m.from_addr))}</span>
+      <div class="who">
+        <b><span class="name">${esc(m.first_name || m.from_addr)}</span><time>${when(m.sent_at)}</time></b>
+        <span>${esc(m.company || m.from_addr)}${m.campaign_name ? ` · ${esc(m.campaign_name)}` : ''}</span>
+        <p>${esc((m.body || m.subject || '').slice(0, 180))}</p>
+      </div>
+    </div>`).join('') : `<div class="empty"><b>${emptyText[0]}</b>${emptyText[1]}</div>`;
 
   shell(`
     <div class="head"><div><h1>Inbox</h1>
-      <p class="sub">Replies from all ${state.data.stats?.mailboxes_total || ''} mailboxes in one
-      place. Anyone who replies is taken out of the follow-up queue automatically.</p></div>
-      <button data-action="sync-inbox">Check now</button></div>
+      <p class="sub">Only replies to mails sent from this tool. Anyone who replies is taken out of
+      the follow-up queue automatically.</p></div>
+      <button data-action="sync-inbox">Check for new replies</button></div>
 
     <div class="tabs">${filters.map(([k, label, n]) => `
       <button class="${state.inboxKind === k ? 'on' : ''}" data-action="inbox-filter" data-kind="${k}">
-        ${label}${n ? ` (${n})` : ''}</button>`).join('')}</div>
+        ${label}${n ? ` <span class="count">${n}</span>` : ''}</button>`).join('')}</div>
 
     <div class="inbox">
       <div class="panel msglist">${list}</div>
       <div class="panel" id="threadpane">
-        <div class="empty">Pick a message to read the whole conversation.</div>
+        <div class="empty"><b>Pick a conversation</b>The whole back-and-forth opens here, and you can reply from the same mailbox.</div>
       </div>
     </div>`, 'inbox');
 
@@ -895,38 +989,45 @@ async function openThread(leadId) {
   state.selectedLead = Number(leadId);
   const pane = document.getElementById('threadpane');
   if (!pane) { location.hash = '#/inbox'; return; }
+  document.querySelectorAll('.msg').forEach((el) =>
+    el.classList.toggle('on', Number(el.dataset.id) === state.selectedLead));
 
   const { lead, messages } = await api(`/inbox/thread/${leadId}`);
+  document.querySelector(`.msg[data-id="${lead.id}"]`)?.classList.remove('unread');
+
+  const stamp = (iso) => new Date(iso).toLocaleString('en-IN',
+    { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 
   pane.innerHTML = `
-    <header>
-      <div>
-        <h2>${esc(lead.first_name || lead.email)} ${statusChip(lead.status)}</h2>
-        <div class="hint mono">${esc(lead.email)}</div>
-        <div class="hint">${esc(lead.company || '')}${lead.company ? ' · ' : ''}
-          ${esc(lead.campaign_name || '')} · from ${esc(lead.mailbox_email || '')}</div>
+    <header class="thread-head">
+      <span class="avatar">${esc(initials(lead.first_name || lead.email))}</span>
+      <div class="grow">
+        <h2>${esc([lead.first_name, lead.last_name].filter(Boolean).join(' ') || lead.email)} ${statusChip(lead.status)}</h2>
+        <div class="hint">${esc(lead.email)}${lead.company ? ` · ${esc(lead.company)}` : ''}</div>
+        <div class="hint">${esc(lead.campaign_name || '')}${lead.mailbox_email ? ` · sent from ${esc(lead.mailbox_email)}` : ''}</div>
       </div>
       <button class="small danger" data-action="stop-lead" data-id="${lead.id}">Never mail again</button>
     </header>
-    <div style="max-height:44vh;overflow:auto">
+    <div class="thread" id="thread">
       ${messages.map((m) => `
         <div class="bubble ${m.direction}">
           <header>
-            <span>${m.direction === 'out' ? `You → ${esc(m.to_addr)}` : esc(m.from_addr)}</span>
-            <span>${new Date(m.sent_at).toLocaleString('en-IN',
-    { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>
+            <span>${m.direction === 'out' ? 'You' : esc(lead.first_name || m.from_addr)}</span>
+            <span>${stamp(m.sent_at)}</span>
           </header>
-          <div class="hint" style="margin-bottom:6px">${esc(m.subject || '')}</div>
+          ${m.subject ? `<div class="subj">${esc(m.subject)}</div>` : ''}
           <pre>${esc(m.body || '')}</pre>
         </div>`).join('')}
     </div>
-    <div class="body" style="border-top:1px solid var(--rule)">
-      <textarea id="replytext" placeholder="Write your reply…"></textarea>
-      <div class="actions" style="margin-top:9px">
+    <div class="composer">
+      <textarea id="replytext" placeholder="Write your reply to ${esc(lead.first_name || lead.email)}…"></textarea>
+      <div class="actions" style="margin-top:10px;justify-content:space-between">
+        <span class="hint" style="margin:0">Goes out from ${esc(lead.mailbox_email || '')}, on the same thread.</span>
         <button class="primary" data-action="send-reply" data-id="${lead.id}">Send reply</button>
-        <span class="hint">Goes out from ${esc(lead.mailbox_email || '')}, on the same thread.</span>
       </div>
     </div>`;
+  const t = document.getElementById('thread');
+  if (t) t.scrollTop = t.scrollHeight;
 }
 
 
@@ -965,14 +1066,15 @@ async function viewContacts() {
       to stop are held back automatically.</p></div>
       <button class="primary" data-action="import-contacts">Import CSV</button></div>
 
-    <div class="daystrip">
-      <div class="count"><b>${facets.total.toLocaleString('en-IN')}</b>
-        <small>contacts in the database · ${facets.fresh.toLocaleString('en-IN')} never contacted</small>
-      </div>
-      <div class="facts">
-        <div><b>${matching.toLocaleString('en-IN')}</b><span>match your filter</span></div>
-        <div><b>${facets.recently_verified.toLocaleString('en-IN')}</b><span>verified in last 90 days</span></div>
-      </div>
+    <div class="tiles">
+      <div class="tile"><span>Contacts</span><b>${facets.total.toLocaleString('en-IN')}</b>
+        <small>everything ever uploaded</small></div>
+      <div class="tile ${facets.fresh ? 'good' : ''}"><span>Never contacted</span><b>${facets.fresh.toLocaleString('en-IN')}</b>
+        <small>fresh, ready for a campaign</small></div>
+      <div class="tile"><span>Match your filter</span><b>${matching.toLocaleString('en-IN')}</b>
+        <small>safe to mail</small></div>
+      <div class="tile"><span>Verified recently</span><b>${facets.recently_verified.toLocaleString('en-IN')}</b>
+        <small>in the last 90 days</small></div>
     </div>
 
     ${facets.recently_verified < facets.total * 0.5 ? `
@@ -1203,7 +1305,7 @@ async function viewBlocklist() {
         <td class="hint">${when(b.created_at)}</td>
         <td class="num"><button class="small" data-action="unblock" data-id="${b.id}">Remove</button></td>
       </tr>`).join('')}</tbody></table>`
-    : '<div class="empty">Nothing blocked yet.</div>'}</div>`, 'blocklist');
+    : '<div class="empty"><b>Nothing blocked yet</b>Anyone who asks to stop or hard-bounces is added here automatically.</div>'}</div>`, 'blocklist');
 }
 
 /* -------------------------------------------------------------- dialog -- */
@@ -1449,6 +1551,7 @@ async function route() {
   try {
     const me = await api('/auth/me');
     if (!me.authenticated) return renderLogin();
+    state.data.stats = await api('/stats').catch(() => state.data.stats);
 
     if (hash.startsWith('campaign/')) {
       return viewCampaign(hash.split('/')[1]);
